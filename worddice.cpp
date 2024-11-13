@@ -1,5 +1,8 @@
 // Ethan Dietrich
+// William Armentrout
 // Project 5: Worddice
+// Description: This program takes in "word dice" and determines which of the provided
+//          words it is able to spell through the use of a graph and edmondsKarp algorithm.
 
 #include <iostream>
 #include <fstream>
@@ -8,6 +11,8 @@
 #include <queue>
 #include <climits>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 using namespace std;
 
@@ -25,7 +30,7 @@ public:
     void addEdge(int u, int v, int cap) {
         capacity[u][v] += cap;
         adjList[u].push_back(v);
-        adjList[v].push_back(u); // reverse edge
+        adjList[v].push_back(u); // reverse edge for residual graph
     }
 
     // BFS to find an augmenting path
@@ -36,152 +41,134 @@ public:
         q.push({source, INT_MAX});
 
         while (!q.empty()) {
-            int node = q.front().first;
+            int current = q.front().first;
             int flow = q.front().second;
             q.pop();
 
-            for (int neighbor : adjList[node]) {
-                if (parent[neighbor] == -1 && capacity[node][neighbor] > 0) {
-                    parent[neighbor] = node;
-                    int new_flow = min(flow, capacity[node][neighbor]);
-                    if (neighbor == sink) return true;
-                    q.push({neighbor, new_flow});
+            for (int next : adjList[current]) {
+                // If there's available capacity and next is not yet visited
+                if (parent[next] == -1 && capacity[current][next] > 0) {
+                    parent[next] = current;
+                    int new_flow = min(flow, capacity[current][next]);
+                    if (next == sink) {
+                        return true;
+                    }
+                    q.push({next, new_flow});
                 }
             }
         }
         return false;
     }
 
-    // Edmonds-Karp algorithm for finding the maximum flow
-    int edmondsKarp(int source, int sink) {
+    // Edmonds-Karp algorithm for finding max flow
+    int edmondsKarp(int source, int sink, vector<int>& parent) {
         int flow = 0;
-        vector<int> parent(V);
-
-        // Augment the flow while there is an augmenting path
         while (bfs(source, sink, parent)) {
-            int current_flow = INT_MAX;
-            int s = sink;
-            while (s != source) {
-                int p = parent[s];
-                current_flow = min(current_flow, capacity[p][s]);
-                s = p;
+            int path_flow = INT_MAX;
+            for (int v = sink; v != source; v = parent[v]) {
+                int u = parent[v];
+                path_flow = min(path_flow, capacity[u][v]);
             }
 
-            flow += current_flow;
-            s = sink;
-            while (s != source) {
-                int p = parent[s];
-                capacity[p][s] -= current_flow;
-                capacity[s][p] += current_flow;
-                s = p;
+            for (int v = sink; v != source; v = parent[v]) {
+                int u = parent[v];
+                capacity[u][v] -= path_flow;
+                capacity[v][u] += path_flow;
             }
+            flow += path_flow;
         }
         return flow;
     }
 };
 
-// Function to read the dice and words from the files and set up the graph
-void readorig(const string& diceFile, const string& wordsFile, Graph& graph, vector<string>& dice, vector<string>& words) {
-    ifstream diceStream(diceFile);
-    ifstream wordsStream(wordsFile);
-    string line;
+// Function to check if a word can be spelled with the given dice and to get the correct dice order
+bool canSpellWord(const vector<string>& dice, const string& word, vector<int>& dice_order) {
+    
+    int num_dice = dice.size();
+    int word_len = word.length();
+    Graph graph(num_dice + word_len + 2); // +2 for source and sink
 
-    // Read dice from file
-    while (getline(diceStream, line)) {
-        dice.push_back(line);
+    int source = num_dice + word_len;
+    int sink = num_dice + word_len + 1;
+
+    // Connect source to each die and each letter to sink
+    for (int i = 0; i < num_dice; ++i) {
+        graph.addEdge(source, i, 1);
+    }
+    for (int i = 0; i < word_len; ++i) {
+        graph.addEdge(num_dice + i, sink, 1);
     }
 
-    // Read words from file
-    while (getline(wordsStream, line)) {
-        words.push_back(line);
-    }
-
-    // Create graph edges: source -> dice nodes, dice nodes -> word nodes, word nodes -> sink
-    int nodeOffset = dice.size();
-    int source = 0;
-    int sink = nodeOffset + words.size() + 1;
-
-    // Create the edges from source to dice nodes
-    for (int i = 0; i < dice.size(); ++i) {
-        graph.addEdge(source, i + 1, 1); // Source to dice nodes
-    }
-
-    // Create edges from dice nodes to word nodes
-    for (int i = 0; i < dice.size(); ++i) {
-        for (int j = 0; j < words.size(); ++j) {
-            for (char c : words[j]) {
-                if (dice[i].find(c) != string::npos) {
-                    graph.addEdge(i + 1, nodeOffset + j + 1, 1); // Dice to words
-                    break;
-                }
+    // Connect dice to letters they can spell
+    for (int i = 0; i < num_dice; ++i) {
+        for (int j = 0; j < word_len; ++j) {
+            if (dice[i].find(word[j]) != string::npos) {
+                graph.addEdge(i, num_dice + j, 1);
             }
         }
     }
 
-    // Create edges from word nodes to sink
-    for (int i = 0; i < words.size(); ++i) {
-        graph.addEdge(nodeOffset + i + 1, sink, 1); // Word nodes to sink
+    // Prepare parent vector for tracking flow path and perform max flow calculation
+    vector<int> parent(graph.V, -1);
+    int max_flow = graph.edmondsKarp(source, sink, parent);
+    if (max_flow != word_len) {
+        return false;
     }
-}
 
-// Function to solve the worddice problem
-void solveWordDice(const vector<string>& dice, const vector<string>& words, Graph& graph) {
-    int nodeOffset = dice.size();
-    int source = 0;
-    int sink = nodeOffset + words.size() + 1;
+    // Backtrack to identify exact dice usage in order
+    dice_order.clear();
+    vector<bool> used_dice(num_dice, false); // Track used dice
 
-    // Calculate maximum flow from source to sink
-    int maxFlow = graph.edmondsKarp(source, sink);
-
-    // Check each word to see if it can be spelled
-    for (const string& word : words) {
-        vector<int> parent(graph.V);
-        if (graph.bfs(source, sink, parent)) {
-            bool canSpell = true;
-            for (char c : word) {
-                bool found = false;
-                for (int i = 0; i < dice.size(); ++i) {
-                    if (dice[i].find(c) != string::npos) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    canSpell = false;
-                    break;
-                }
-            }
-
-            // Output if the word can be spelled
-            if (canSpell) {
-                cout << word << " can be spelled." << endl;
-            } else {
-                cout << "Cannot spell " << word << endl;
+    for (int i = 0; i < word_len; ++i) {
+        for (int d = 0; d < num_dice; ++d) {
+            // Check if die d is used for letter i and hasn't been used before
+            if (graph.capacity[num_dice + i][d] > 0 && !used_dice[d]) {
+                dice_order.push_back(d);
+                used_dice[d] = true; // Mark die as used
+                break;
             }
         }
     }
+    return true;
 }
 
 int main(int argc, char* argv[]) {
+    
     if (argc != 3) {
-        cerr << "Usage: worddice <diceFile> <wordsFile>" << endl;
+        cerr << "Usage: " << argv[0] << " <dice_file> <words_file>" << endl;
         return 1;
     }
 
-    string diceFile = argv[1];
-    string wordsFile = argv[2];
+    // Get files
+    ifstream dice_file(argv[1]); 
+    ifstream words_file(argv[2]);
+    // Error checking
+    if (!dice_file.is_open() || !words_file.is_open()) {
+        cerr << "Error opening file(s)." << endl;
+        return 1;
+    }
 
+    // Read dice
     vector<string> dice;
-    vector<string> words;
+    string line;
+    while (getline(dice_file, line)) {
+        dice.push_back(line);
+    }
 
-    // Create graph with appropriate size (source + sink + dice + words)
-    Graph graph(dice.size() + words.size() + 2);
-
-    // Read dice and words from file and build graph
-    readorig(diceFile, wordsFile, graph, dice, words);
-
-    // Solve the problem using the graph and the flow algorithm
-    solveWordDice(dice, words, graph);
+    // Check each word
+    while (getline(words_file, line)) {
+        string word = line;
+        vector<int> dice_order;
+        if (canSpellWord(dice, word, dice_order)) {
+            for (size_t i = 0; i < dice_order.size(); ++i) {
+                cout << dice_order[i];
+                if (i < dice_order.size() - 1) cout << ",";
+            }
+            cout << ": " << word << endl;
+        } else {
+            cout << "Cannot spell " << word << endl;
+        }
+    }
 
     return 0;
 }
